@@ -1,7 +1,7 @@
 /*
 *  myfs.c - Implementacao do sistema de arquivos MyFS
 *
-*  Autores: SUPER_PROGRAMADORES_C
+*  Autores: Lara dias - 202376010, Sarah Cristina - 202376034, Willian Santos
 *  Projeto: Trabalho Pratico II - Sistemas Operacionais
 *  Organizacao: Universidade Federal de Juiz de Fora
 *  Departamento: Dep. Ciencia da Computacao
@@ -18,6 +18,97 @@
 //Declaracoes globais
 //...
 //...
+#define MYFS 0x4D794653
+#define MAX_FILENAME 14
+#define ENTRY_SIZE_DIR 16
+#define MAX_OPEN 20
+#define ROOT_INODE_NUMBER 1
+#define TYPEFILE_REGULAR 1
+#define TYPEFILE_DIRECTORY 2
+
+//=================Estruturas==============
+typedef struct{
+	unsigned int number_myfs; // Assinatura do nosso sistema
+	unsigned int block_size; // Tamanho do bloco
+	unsigned int total_blocks; // Número total de blocos
+	unsigned int start_inode; 
+	unsigned int count_inode; // Quantidade de i-nodes que cabem
+	unsigned int start_data; // Primeiro bloco onde podem ser armazenados arquivos
+	unsigned int free_blocks; // blocos ainda livres
+	unsigned int root_inode; // i-node do diretório raiz
+
+
+}Super_block;
+
+//Entrada no diretorio (16 bytes)
+typedef struct
+{
+	unsigned short inumber; // numero do i-node (2bytes)
+	char filename[MAX_FILENAME]; // nome do arquivo (14 bytes)
+}Entry_dir;
+
+// entrada na tabela de arquivos já abertos
+typedef struct{
+	int used;
+	unsigned int inumber;
+	unsigned int pointer_file;
+	int is_directory;
+	unsigned int position_dir;
+}Open_file;
+
+static Super_block sb; // super bloco na memoria
+static int mounted = 0; // Flag, 1 se montado e 0 se não
+static unsigned char *map_bit = NULL; 
+static Open_file open[MAX_OPEN]; // tabela de arquivos abertos
+
+// função para encontrar um bloco livre
+static int find_free_fd(Disk *d){
+	unsigned int total_blocks = sb.total_blocks;
+	// procura um bit 0
+	for (unsigned int i = sb.start_data; i<total_blocks; i++){
+		int index_byte = i/8;
+		int index_bit = i%8;
+
+		if((map_bit[index_byte] & (1 << index_bit)) == 0){
+			// marca que o bloco está usado
+			map_bit[index_byte] |= (1 << index_bit);
+			sb.free_blocks --;
+			// salva o bitmap atualizado no disco
+			unsigned char block[512];
+			memcpy(block, map_bit, 512);
+			diskWriteSector(d, 1, block);
+			// salva o bloco atualizado
+			unsigned char Super_block[512];
+			memset(Super_block, 0, 512);
+			unsigned int pos = 0;
+			ul2char(sb.number_myfs, &Super_block[pos]); pos +=4;
+			ul2char(sb.block_size, &Super_block[pos]); pos +=4;
+			ul2char(sb.total_blocks, &Super_block[pos]); pos +=4;
+			ul2char(sb.start_inode, &Super_block[pos]); pos +=4;
+			ul2char(sb.count_inode, &Super_block[pos]); pos +=4;
+			ul2char(sb.start_data, &Super_block[pos]); pos +=4;
+			ul2char(sb.free_blocks, &Super_block[pos]); pos +=4;
+			ul2char(sb.root_inode, &Super_block[pos]); pos +=4;
+			diskWriteSector(d,0, Super_block);
+
+			return i;
+
+
+		}
+
+	}
+	return -1; // nenhum bloco está livre
+
+}
+// função para encontrar uma entrada livre na tabela de arquivos abertos
+static int free_file_find(){
+	for(int i = 0; i< MAX_OPEN; i++){
+		if(!open[i].used){
+			return i;
+		}
+	}
+	return -1;
+}
 
 
 //Funcao para verificacao se o sistema de arquivos está ocioso, ou seja,
