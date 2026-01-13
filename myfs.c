@@ -561,7 +561,23 @@ int myFSUnlink (int fd, const char *filename) {
 //Funcao para fechar um diretorio, identificado por um descritor de
 //arquivo existente. Retorna 0 caso bem sucedido, ou -1 caso contrario.	
 int myFSCloseDir (int fd) {
-	return -1;
+	
+	 // Verifica se o descritor é válido
+    if (fd < 0 || fd >= MAX_OPEN)
+        return -1;
+
+    // Verifica se o descritor está em uso e se é um diretório
+    if (!open[fd].used || !open[fd].is_directory)
+        return -1;
+
+    // Libera a entrada da tabela de arquivos abertos
+    open[fd].used = 0;
+    open[fd].inumber = 0;
+    open[fd].position_dir = 0;
+    open[fd].is_directory = 0;
+
+    return 0;
+
 }
 
 //Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
