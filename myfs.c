@@ -20,7 +20,7 @@
 //Declaracoes globais
 //...
 //...
-#define MYFS 0x4D794653          // "MyFS" em hex - assinatura única
+#define MYFS 0x4D794653          // assinatura do nosso SF
 #define MAX_FILENAME_LEN 14                // Comprimento máximo do nome de um arquivo
 #define DIR_ENTRY_SIZE 16                  // Tamanho da entrada de diretório (2+14 bytes)
 #define MAX_OPEN_FILES 20                  // Máximo de arquivos/diretórios abertos
