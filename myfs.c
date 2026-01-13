@@ -318,7 +318,80 @@ int myFSOpenDir (Disk *d, const char *path) {
 //Retorna 1 se uma entrada foi lida, 0 se fim de diretorio ou -1 caso
 //mal sucedido
 int myFSReadDir (int fd, char *filename, unsigned int *inumber) {
-	return -1;
+
+	   // Verifica se o descritor de diretório é válido
+    if (fd < 0 || fd >= MAX_OPEN)
+        return -1;
+
+    // Verifica se o descritor está em uso e se realmente é um diretório
+    if (!open[fd].used || !open[fd].is_directory)
+        return -1;
+
+    // Carrega o i-node do diretório a partir do número armazenado na tabela open[]
+    Inode *dir_inode = inodeLoad(open[fd].inumber, NULL);
+    if (!dir_inode)
+        return -1;
+
+    // Posição atual do cursor no diretório (qual entrada será lida)
+    unsigned int pos = open[fd].position_dir;
+
+    // Tamanho de uma entrada de diretório (16 bytes)
+    unsigned int entry_size = sizeof(Entry_dir);
+
+    // Calcula qual bloco do diretório contém a entrada atual
+    unsigned int block_index = (pos * entry_size) / sb.block_size;
+
+    // Calcula o deslocamento da entrada dentro do bloco
+    unsigned int offset = (pos * entry_size) % sb.block_size;
+
+    // Obtém o endereço do bloco no disco a partir do i-node
+    unsigned int block_addr = inodeGetBlockAddr(dir_inode, block_index);
+
+    // Se não houver bloco associado, chegou ao fim do diretório
+    if (block_addr == 0) {
+        free(dir_inode);
+        return 0; // fim do diretório
+    }
+
+    // Buffer para leitura do bloco do disco
+    unsigned char block[512];
+
+    // Lê o bloco do disco
+    if (diskReadSector(dir_inode->d, block_addr, block) < 0) {
+        free(dir_inode);
+        return -1;
+    }
+
+    // Estrutura para armazenar a entrada de diretório lida
+    Entry_dir entry;
+
+    // Copia os dados da entrada a partir do bloco
+    memcpy(&entry, block + offset, entry_size);
+
+    // Se o número do i-node for 0, a entrada é vazia → fim do diretório
+    if (entry.inumber == 0) {
+        free(dir_inode);
+        return 0;
+    }
+
+    // Copia o nome do arquivo para o buffer de saída
+    strncpy(filename, entry.filename, MAX_FILENAME);
+
+    // Garante que o nome termine com '\0'
+    filename[MAX_FILENAME] = '\0';
+
+    // Retorna o número do i-node associado à entrada
+    *inumber = entry.inumber;
+
+    // Avança o cursor do diretório para a próxima entrada
+    open[fd].position_dir++;
+
+    // Libera o i-node carregado
+    free(dir_inode);
+
+
+    return 1;
+
 }
 
 //Funcao para adicionar uma entrada a um diretorio, identificado por um
