@@ -493,7 +493,69 @@ int myFSLink (int fd, const char *filename, unsigned int inumber) {
 //identificada pelo nome indicado em filename. Retorna 0 caso bem
 //sucedido, ou -1 caso contrario.
 int myFSUnlink (int fd, const char *filename) {
-	return -1;
+	
+	// Verifica se o descritor é válido
+    if (fd < 0 || fd >= MAX_OPEN)
+        return -1;
+
+    // Verifica se o descritor está em uso e se é um diretório
+    if (!open[fd].used || !open[fd].is_directory)
+        return -1;
+
+    // Nome inválido
+    if (!filename || strlen(filename) == 0 || strlen(filename) > MAX_FILENAME)
+        return -1;
+
+    // Carrega o i-node do diretório
+    Inode *dir_inode = inodeLoad(open[fd].inumber, NULL);
+    if (!dir_inode)
+        return -1;
+
+    unsigned int entry_size = sizeof(Entry_dir);
+    unsigned int entries_per_block = sb.block_size / entry_size;
+
+    // Percorre todas as entradas do diretório
+    for (unsigned int pos = 0; ; pos++) {
+
+        unsigned int block_index = pos / entries_per_block;
+        unsigned int offset = (pos % entries_per_block) * entry_size;
+
+        // Obtém o endereço do bloco do diretório
+        unsigned int block_addr = inodeGetBlockAddr(dir_inode, block_index);
+
+        // Se não houver mais blocos, a entrada não existe
+        if (block_addr == 0) {
+            free(dir_inode);
+            return -1;
+        }
+
+        // Lê o bloco do disco
+        unsigned char block[512];
+        if (diskReadSector(dir_inode->d, block_addr, block) < 0) {
+            free(dir_inode);
+            return -1;
+        }
+
+        Entry_dir *entry = (Entry_dir *)(block + offset);
+
+        // Se a entrada for válida e o nome bater
+        if (entry->inumber != 0 &&
+            strncmp(entry->filename, filename, MAX_FILENAME) == 0) {
+
+            // Remove a entrada: zera o i-node e o nome
+            entry->inumber = 0;
+            memset(entry->filename, 0, MAX_FILENAME);
+
+            // Grava o bloco atualizado no disco
+            if (diskWriteSector(dir_inode->d, block_addr, block) < 0) {
+                free(dir_inode);
+                return -1;
+            }
+
+            free(dir_inode);
+            return 0; // 
+        }
+    }
 }
 
 //Funcao para fechar um diretorio, identificado por um descritor de
