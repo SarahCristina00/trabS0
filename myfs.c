@@ -399,7 +399,93 @@ int myFSReadDir (int fd, char *filename, unsigned int *inumber) {
 //por filename e apontara' para o numero de i-node indicado por inumber.
 //Retorna 0 caso bem sucedido, ou -1 caso contrario.
 int myFSLink (int fd, const char *filename, unsigned int inumber) {
-	return -1;
+	
+	// Verifica se o descritor é válido
+    if (fd < 0 || fd >= MAX_OPEN)
+        return -1;
+
+    // Verifica se está em uso e se é um diretório
+    if (!open[fd].used || !open[fd].is_directory)
+        return -1;
+
+    // Nome inválido
+    if (!filename || strlen(filename) == 0 || strlen(filename) > MAX_FILENAME)
+        return -1;
+
+    // Carrega o i-node do diretório
+    Inode *dir_inode = inodeLoad(open[fd].inumber, NULL);
+    if (!dir_inode)
+        return -1;
+
+    unsigned int entry_size = sizeof(Entry_dir);
+    unsigned int entries_per_block = sb.block_size / entry_size;
+
+    // Percorre todas as entradas do diretório
+    for (unsigned int pos = 0; ; pos++) {
+
+        unsigned int block_index = pos / entries_per_block;
+        unsigned int offset = (pos % entries_per_block) * entry_size;
+
+        // Obtém o endereço do bloco
+        unsigned int block_addr = inodeGetBlockAddr(dir_inode, block_index);
+
+        // Se o bloco não existir, cria um novo
+        if (block_addr == 0) {
+            block_addr = find_free_fd(dir_inode->d);
+            if (block_addr < 0) {
+                free(dir_inode);
+                return -1;
+            }
+
+            // Associa o novo bloco ao diretório
+            if (inodeAddBlock(dir_inode, block_addr) < 0) {
+                free(dir_inode);
+                return -1;
+            }
+
+            // Inicializa o bloco com zeros
+            unsigned char empty_block[512] = {0};
+            diskWriteSector(dir_inode->d, block_addr, empty_block);
+        }
+
+        // Lê o bloco do diretório
+        unsigned char block[512];
+        if (diskReadSector(dir_inode->d, block_addr, block) < 0) {
+            free(dir_inode);
+            return -1;
+        }
+
+        Entry_dir *entry = (Entry_dir *)(block + offset);
+
+        // Se já existir uma entrada com esse nome → erro
+        if (entry->inumber != 0 &&
+            strncmp(entry->filename, filename, MAX_FILENAME) == 0) {
+            free(dir_inode);
+            return -1;
+        }
+
+        // Encontrou uma entrada livre
+        if (entry->inumber == 0) {
+
+            entry->inumber = inumber;
+            memset(entry->filename, 0, MAX_FILENAME);
+            strncpy(entry->filename, filename, MAX_FILENAME);
+
+            // Escreve o bloco de volta no disco
+            if (diskWriteSector(dir_inode->d, block_addr, block) < 0) {
+                free(dir_inode);
+                return -1;
+            }
+
+            // Atualiza tamanho do diretório (opcional, mas correto)
+            unsigned int size = inodeGetFileSize(dir_inode);
+            inodeSetFileSize(dir_inode, size + entry_size);
+            inodeSave(dir_inode);
+
+            free(dir_inode);
+            return 0; 
+        }
+    }
 }
 
 //Funcao para remover uma entrada existente em um diretorio, 
