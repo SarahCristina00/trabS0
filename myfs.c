@@ -10,112 +10,129 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "myfs.h"
 #include "vfs.h"
 #include "inode.h"
 #include "util.h"
+#include "disk.h"
 
 //Declaracoes globais
 //...
 //...
-#define MYFS 0x4D794653
-#define MAX_FILENAME 14
-#define ENTRY_SIZE_DIR 16
-#define MAX_OPEN 20
-#define ROOT_INODE_NUMBER 1
-#define TYPEFILE_REGULAR 1
-#define TYPEFILE_DIRECTORY 2
+#define MYFS 0x4D794653          // "MyFS" em hex - assinatura única
+#define MAX_FILENAME_LEN 14                // Comprimento máximo do nome de um arquivo
+#define DIR_ENTRY_SIZE 16                  // Tamanho da entrada de diretório (2+14 bytes)
+#define MAX_OPEN_FILES 20                  // Máximo de arquivos/diretórios abertos
+#define ROOT_INODE_NUM 1                   // I-node do diretório raiz (sempre 1)
+#define INODE_TYPE_REGULAR 1               // Tipo de i-node: arquivo regular
+#define INODE_TYPE_DIRECTORY 2             // Tipo de i-node: diretório
 
-//=================Estruturas==============
-typedef struct{
-	unsigned int number_myfs; // Assinatura do nosso sistema
-	unsigned int block_size; // Tamanho do bloco
-	unsigned int total_blocks; // Número total de blocos
-	unsigned int start_inode; 
-	unsigned int count_inode; // Quantidade de i-nodes que cabem
-	unsigned int start_data; // Primeiro bloco onde podem ser armazenados arquivos
-	unsigned int free_blocks; // blocos ainda livres
-	unsigned int root_inode; // i-node do diretório raiz
+// ================= Estruturas de dados ===============
 
+// Estrutura do superbloco (bloco 0 do disco)
+typedef struct {
+    unsigned int magic_number;             // Assinatura do nosso sistema de arquivos
+    unsigned int block_size;               // Tamanho do bloco (sempre 512)
+    unsigned int total_blocks;             // Número total de blocos
+    unsigned int inode_start_block;        // Bloco onde os i-nodes começam
+    unsigned int inode_count;              // Quantos i-nodes existem
+    unsigned int data_start_block;         // Primeiro bloco da área de dados
+    unsigned int free_blocks;              // Blocos disponíveis
+    unsigned int root_inode;               // I-node do diretório raiz
+} superblock_t;
 
-}Super_block;
+// Entrada de diretório (16 bytes: 2 + 14)
+typedef struct {
+    unsigned short inode_number;           // Número do i-node (2 bytes)
+    char filename[MAX_FILENAME_LEN];       // Nome do arquivo (14 bytes)
+} dir_entry_t;
 
-//Entrada no diretorio (16 bytes)
-typedef struct
-{
-	unsigned short inumber; // numero do i-node (2bytes)
-	char filename[MAX_FILENAME]; // nome do arquivo (14 bytes)
-}Entry_dir;
+// Controle de arquivo/diretório aberto
+typedef struct {
+    int is_used;                           // 1=aberto, 0=fechado
+    unsigned int inode_number;             // I-node associado
+    unsigned int current_position;         // Posição no arquivo (cursor)
+    int is_directory;                      // 1=diretorio, 0=arquivo
+    unsigned int dir_read_position;        // Posição na leitura do diretório
+} open_file_t;
 
-// entrada na tabela de arquivos já abertos
-typedef struct{
-	int used;
-	unsigned int inumber;
-	unsigned int pointer_file;
-	int is_directory;
-	unsigned int position_dir;
-}Open_file;
+// ================= Variáveis globais ===============
 
-static Super_block sb; // super bloco na memoria
-static int mounted = 0; // Flag, 1 se montado e 0 se não
-static unsigned char *map_bit = NULL; 
-static Open_file open[MAX_OPEN]; // tabela de arquivos abertos
+static superblock_t sb_cache;              // Cópia do superbloco em memória
+static int fs_mounted = 0;                 // 1=montado, 0=não montado
+static unsigned char *block_bitmap = NULL; // Mapa de bits (1 bit por bloco)
+static open_file_t open_files_table[MAX_OPEN_FILES]; // Tabela de arquivos abertos
 
-// função para encontrar um bloco livre
-static int find_free_fd(Disk *d){
-	unsigned int total_blocks = sb.total_blocks;
-	// procura um bit 0
-	for (unsigned int i = sb.start_data; i<total_blocks; i++){
-		int index_byte = i/8;
-		int index_bit = i%8;
+// ================= Funções auxiliares ===============
 
-		if((map_bit[index_byte] & (1 << index_bit)) == 0){
-			// marca que o bloco está usado
-			map_bit[index_byte] |= (1 << index_bit);
-			sb.free_blocks --;
-			// salva o bitmap atualizado no disco
-			unsigned char block[512];
-			memcpy(block, map_bit, 512);
-			diskWriteSector(d, 1, block);
-			// salva o bloco atualizado
-			unsigned char Super_block[512];
-			memset(Super_block, 0, 512);
-			unsigned int pos = 0;
-			ul2char(sb.number_myfs, &Super_block[pos]); pos +=4;
-			ul2char(sb.block_size, &Super_block[pos]); pos +=4;
-			ul2char(sb.total_blocks, &Super_block[pos]); pos +=4;
-			ul2char(sb.start_inode, &Super_block[pos]); pos +=4;
-			ul2char(sb.count_inode, &Super_block[pos]); pos +=4;
-			ul2char(sb.start_data, &Super_block[pos]); pos +=4;
-			ul2char(sb.free_blocks, &Super_block[pos]); pos +=4;
-			ul2char(sb.root_inode, &Super_block[pos]); pos +=4;
-			diskWriteSector(d,0, Super_block);
-
-			return i;
-
-
-		}
-
-	}
-	return -1; // nenhum bloco está livre
-
+// Encontra um bloco livre no mapa de bits
+// Retorna o número do bloco encontrado ou -1 se não houver blocos livres
+static int find_free_block(Disk *d) {
+    unsigned int total_blocks = sb_cache.total_blocks;
+    
+    // Percorre a partir da área de dados
+    for (unsigned int block_num = sb_cache.data_start_block; block_num < total_blocks; block_num++) {
+        int byte_index = block_num / 8;      // Qual byte no bitmap
+        int bit_index = block_num % 8;       // Qual bit dentro do byte
+        
+        // Verifica se o bit está livre (0)
+        if ((block_bitmap[byte_index] & (1 << bit_index)) == 0) {
+            // Marca o bloco como ocupado
+            block_bitmap[byte_index] |= (1 << bit_index);
+            sb_cache.free_blocks--;
+            
+            // Salva o bitmap atualizado no disco (bloco 1)
+            unsigned char block_buffer[512];
+            memcpy(block_buffer, block_bitmap, 512);
+            diskWriteSector(d, 1, block_buffer);
+            
+            // Salva o superbloco atualizado no disco (bloco 0)
+            unsigned char superblock_buffer[512];
+            memset(superblock_buffer, 0, 512);
+            
+            unsigned int buffer_pos = 0;
+            ul2char(sb_cache.magic_number, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.block_size, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.total_blocks, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.inode_start_block, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.inode_count, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.data_start_block, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.free_blocks, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            ul2char(sb_cache.root_inode, &superblock_buffer[buffer_pos]); buffer_pos += 4;
+            
+            diskWriteSector(d, 0, superblock_buffer);
+            
+            return block_num;  // Retorna o número do bloco livre encontrado
+        }
+    }
+    
+    return -1;  // Não há blocos livres
 }
-// função para encontrar uma entrada livre na tabela de arquivos abertos
-static int free_file_find(){
-	for(int i = 0; i< MAX_OPEN; i++){
-		if(!open[i].used){
-			return i;
-		}
-	}
-	return -1;
+
+// Encontra um descritor de arquivo livre na tabela
+// Retorna o índice da entrada livre ou -1 se a tabela estiver cheia
+static int find_free_fd(void) {
+    for (int fd_index = 0; fd_index < MAX_OPEN_FILES; fd_index++) {
+        if (!open_files_table[fd_index].is_used) {
+            return fd_index;
+        }
+    }
+    return -1;  // Tabela de arquivos abertos cheia
 }
 
 
 //Funcao para verificacao se o sistema de arquivos está ocioso, ou seja,
 //se nao ha quisquer descritores de arquivos em uso atualmente. Retorna
 //um positivo se ocioso ou, caso contrario, 0.
+
 int myFSIsIdle (Disk *d) {
-	return 0;
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (open_files_table[i].is_used) {
+            return 0;  // Não está ocioso - há arquivos abertos
+        }
+    }
+    return 1;  // Está ocioso - nenhum arquivo aberto
 }
 
 //Funcao para formatacao de um disco com o novo sistema de arquivos
@@ -132,7 +149,87 @@ int myFSFormat (Disk *d, unsigned int blockSize) {
 //de gravacao devem ser persistidos no disco. Retorna um positivo se a
 //montagem ou desmontagem foi bem sucedida ou, caso contrario, 0.
 int myFSxMount (Disk *d, int x) {
-	return 0;
+	if (x == 1) {  // Operação de montagem
+        unsigned char superblock_buffer[512];
+        
+        // Lê o superbloco do disco (bloco 0)
+        if (diskReadSector(d, 0, superblock_buffer) != 0) {
+            return 0;
+        }
+        
+        // Decodifica os dados do superbloco
+        unsigned int buffer_pos = 0;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.magic_number); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.block_size); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.total_blocks); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.inode_start_block); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.inode_count); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.data_start_block); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.free_blocks); buffer_pos += 4;
+        char2ul(&superblock_buffer[buffer_pos], &sb_cache.root_inode); buffer_pos += 4;
+        
+        // Verifica se é realmente é o nosso sistema MyFS
+        if (sb_cache.magic_number != MYFS) {
+            printf("[MyFS] Erro: Disco não contém sistema MyFS\n");
+            return 0;
+        }
+        
+        // Verifica o tamanho do bloco (só suportamos 512 bytes)
+        if (sb_cache.block_size != 512) {
+            printf("[MyFS] Erro: Tamanho de bloco não suportado\n");
+            return 0;
+        }
+        
+        // Aloca e carrega o mapa de bits (bloco 1)
+        unsigned int bitmap_size = sb_cache.total_blocks / 8 + 1;
+        block_bitmap = malloc(bitmap_size);
+        if (!block_bitmap) {
+            printf("[MyFS] Erro: Memória insuficiente para mapa de bits\n");
+            return 0;
+        }
+        
+        unsigned char bitmap_block[512];
+        if (diskReadSector(d, 1, bitmap_block) != 0) {
+            free(block_bitmap);
+            block_bitmap = NULL;
+            printf("[MyFS] Erro: Não foi possível ler o mapa de bits\n");
+            return 0;
+        }
+        
+        // Copia o primeiro bloco do mapa de bits
+        memcpy(block_bitmap, bitmap_block, 512);
+        
+        // Inicializa a tabela de arquivos abertos
+        memset(open_files_table, 0, sizeof(open_files_table));
+        
+        fs_mounted = 1;
+        printf("[MyFS] Sistema montado com sucesso! %u blocos livres\n", sb_cache.free_blocks);
+        return 1;
+        
+    } else if (x == 0) {  // Operação de desmontagem
+        // Verifica se há arquivos abertos
+        if (!myFSIsIdle(d)) {
+            printf("[MyFS] Erro: Não é possível desmontar com arquivos abertos\n");
+            return 0;
+        }
+        
+        // Libera o mapa de bits da memória
+        if (block_bitmap) {
+            free(block_bitmap);
+            block_bitmap = NULL;
+        }
+        
+        // Limpa o cache do superbloco
+        memset(&sb_cache, 0, sizeof(superblock_t));
+        
+        fs_mounted = 0;
+        printf("[MyFS] Sistema desmontado com sucesso\n");
+        return 1;
+        
+    } else {  // Valor de x inválido
+        printf("[MyFS] Erro: Operação de montagem inválida (x=%d)\n", x);
+        return 0;
+    }
 }
 
 //Funcao para abertura de um arquivo, a partir do caminho especificado
@@ -215,5 +312,37 @@ int myFSCloseDir (int fd) {
 //o sistema de arquivos tenha sido registrado com sucesso.
 //Caso contrario, retorna -1
 int installMyFS (void) {
-	return -1;
+	FSInfo* fs_info_ptr = malloc(sizeof(FSInfo));
+    if (!fs_info_ptr) {
+        printf("[MyFS] Erro: Falha ao alocar memória para estrutura FSInfo\n");
+        return -1;
+    }
+    
+    // Configura os identificadores do sistema
+    fs_info_ptr->fsid = 'M';      // Identificador único  para MyFS
+    fs_info_ptr->fsname = "MyFS"; // Nome do sistema de arquivos
+    
+    // Associa as funções ao FSInfo
+    fs_info_ptr->isidleFn = myFSIsIdle;
+    fs_info_ptr->formatFn = myFSFormat;
+    fs_info_ptr->xMountFn = myFSxMount;
+    fs_info_ptr->openFn = myFSOpen;
+    fs_info_ptr->readFn = myFSRead;
+    fs_info_ptr->writeFn = myFSWrite;
+    fs_info_ptr->closeFn = myFSClose;
+    fs_info_ptr->opendirFn = myFSOpenDir;
+    fs_info_ptr->readdirFn = myFSReadDir;
+    fs_info_ptr->linkFn = myFSLink;
+    fs_info_ptr->unlinkFn = myFSUnlink;
+    fs_info_ptr->closedirFn = myFSCloseDir;
+    
+    // Registra o sistema no VFS 
+    if (vfsRegisterFS(fs_info_ptr) != 0) {
+        printf("[MyFS] Erro: Falha no registro no sistema de arquivos virtual\n");
+        free(fs_info_ptr);
+        return -1;
+    }
+    
+    printf("[MyFS] Sistema de arquivos registrado com sucesso (ID: 'M')\n");
+    return 0;  // Sucesso
 }
