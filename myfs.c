@@ -271,7 +271,43 @@ int myFSClose (int fd) {
 //criando o diretorio se nao existir. Retorna um descritor de arquivo,
 //em caso de sucesso. Retorna -1, caso contrario.
 int myFSOpenDir (Disk *d, const char *path) {
-	return -1;
+
+    //  Verifica se o FS está montado
+    if (!mounted || !d || !path)
+        return -1;
+
+    //  Por enquanto, só aceita o diretório raiz "/"
+    if (strcmp(path, "/") != 0)
+        return -1;
+
+    //  Encontra posição livre na tabela de arquivos abertos
+    int fd = free_file_find();
+    if (fd < 0)
+        return -1;
+
+    //  Carrega o i-node do diretório raiz
+    Inode *root = inodeLoad(sb.root_inode, d);
+    if (!root)
+        return -1;
+
+    //  Verifica se realmente é um diretório
+    if (inodeGetFileType(root) != TYPEFILE_DIRECTORY) {
+        free(root);
+        return -1;
+    }
+
+    // Preenche a tabela de arquivos abertos
+    open[fd].used = 1;
+    open[fd].inumber = sb.root_inode;
+    open[fd].pointer_file = 0;      // cursor começa no início
+    open[fd].is_directory = 1;
+    open[fd].position_dir = 0;      // posição da leitura no diretório
+
+    free(root);
+
+    //  Retorna o descritor (fd começa em 0 internamente)
+    return fd + 1; // VFS espera descritores iniciando em 1
+
 }
 
 //Funcao para a leitura de um diretorio, identificado por um descritor
