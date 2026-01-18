@@ -1,7 +1,7 @@
 /*
 *  myfs.c - Implementacao do sistema de arquivos MyFS
 *
-*  Autores: Lara dias - 202376010, Sarah Cristina - 202376034, Willian Santos
+*  Autores: Lara Dias - 202376010, Sarah Cristina - 202376034, Willian Santos
 *  Projeto: Trabalho Pratico II - Sistemas Operacionais
 *  Organizacao: Universidade Federal de Juiz de Fora
 *  Departamento: Dep. Ciencia da Computacao
@@ -237,7 +237,65 @@ int myFSxMount (Disk *d, int x) {
 //criando o arquivo se nao existir. Retorna um descritor de arquivo,
 //em caso de sucesso. Retorna -1, caso contrario.
 int myFSOpen (Disk *d, const char *path) {
-	return -1;
+	if (!fs_mounted || !path || path[0] != '/') return -1;
+    const char *name = path + 1;
+    if (strlen(name) > MAX_FILENAME_LEN || strlen(name) == 0) return -1;
+
+	//carrega inode do diretorio raiz
+    Inode *root = inodeLoad(sb_cache.root_inode, d);
+    if (!root) return -1;
+
+	//procura entrada de diretorio com o nome solicitado
+    unsigned int found_inumber = 0;
+    unsigned int size = inodeGetFileSize(root);
+	unsigned int num_blocks = (size + sb_cache.block_size - 1) / sb_cache.block_size;
+    unsigned char block_buf[512];
+
+	//percorre todos os blocos do diretorio raiz
+    for (unsigned int i = 0; i < num_blocks; i++) {
+        unsigned int addr = inodeGetBlockAddr(root, i);
+        if (addr == 0) continue;
+        //le blocos do diretorio
+		diskReadSector(d, addr, block_buf);
+        
+		//percorre todas as entradas do bloco
+        for (int off = 0; off < 512; off += sizeof(dir_entry_t)) {
+            dir_entry_t *entry = (dir_entry_t *)(block_buf + off);
+            if (entry->inode_number != 0 && strncmp(entry->filename, name, MAX_FILENAME_LEN) == 0) {
+                //arquivo encontrado
+				found_inumber = entry->inode_number;
+                break;
+            }
+        }
+        if (found_inumber) break;
+    }
+
+    if (found_inumber == 0) {
+        found_inumber = inodeFindFreeInode(1, d);
+        if (found_inumber == 0) { free(root); return -1; }
+        // cria novo arquivo
+        Inode *new_file = inodeCreate(found_inumber, d);
+        if (!new_file) { free(root); return -1; }
+        inodeSetFileType(new_file, INODE_TYPE_REGULAR);
+        inodeSave(new_file);
+        free(new_file);
+		// adiciona entrada no diretorio raiz
+        if (add_dir_entry(d, root, name, found_inumber) < 0) {
+            free(root);
+            return -1;
+        }
+    }
+    free(root);
+
+    int fd = find_free_fd();
+    if (fd == -1) return -1;
+	// preenche a tabela de arquivos abertos
+    open_files_table[fd].is_used = 1;
+    open_files_table[fd].inode_number = found_inumber;
+    open_files_table[fd].current_position = 0;
+    open_files_table[fd].is_directory = 0;
+    
+    return fd + 1; // VFS espera descritores iniciando em 1
 }
 	
 //Funcao para a leitura de um arquivo, a partir de um descritor de arquivo
