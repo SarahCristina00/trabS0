@@ -239,87 +239,54 @@ int myFSFormat (Disk *d, unsigned int blockSize) {
 //de gravacao devem ser persistidos no disco. Retorna um positivo se a
 //montagem ou desmontagem foi bem sucedida ou, caso contrario, 0.
 int myFSxMount (Disk *d, int x) {
-	if (x == 1) {  // Operação de montagem
-        unsigned char superblock_buffer[512];
+	if (x == 1) { // Mount
+        unsigned char buf[512];
+        if (diskReadSector(d, 0, buf) != 0) return 0;
         
-        // Lê o superbloco do disco (bloco 0)
-        if (diskReadSector(d, 0, superblock_buffer) != 0) {
-            return 0;
-        }
+        unsigned int pos = 0;
+        char2ul(&buf[pos], &sb_cache.magic_number); pos += 4;
         
-        // Decodifica os dados do superbloco
-        unsigned int buffer_pos = 0;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.magic_number); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.block_size); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.total_blocks); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.inode_start_block); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.inode_count); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.data_start_block); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.free_blocks); buffer_pos += 4;
-        char2ul(&superblock_buffer[buffer_pos], &sb_cache.root_inode); buffer_pos += 4;
-        
-        // Verifica se é realmente é o nosso sistema MyFS
         if (sb_cache.magic_number != MYFS) {
-            printf("[MyFS] Erro: Disco não contém sistema MyFS\n");
+            printf("[MyFS] Erro: Assinatura inválida.\n");
             return 0;
         }
-        
-        // Verifica o tamanho do bloco (só suportamos 512 bytes)
-        if (sb_cache.block_size != 512) {
-            printf("[MyFS] Erro: Tamanho de bloco não suportado\n");
-            return 0;
-        }
-        
-        // Aloca e carrega o mapa de bits (bloco 1)
-        unsigned int bitmap_size = sb_cache.total_blocks / 8 + 1;
-        block_bitmap = malloc(bitmap_size);
-        if (!block_bitmap) {
-            printf("[MyFS] Erro: Memória insuficiente para mapa de bits\n");
-            return 0;
-        }
-        
-        unsigned char bitmap_block[512];
-        if (diskReadSector(d, 1, bitmap_block) != 0) {
+        char2ul(&buf[pos], &sb_cache.block_size); pos += 4;
+        char2ul(&buf[pos], &sb_cache.total_blocks); pos += 4;
+        char2ul(&buf[pos], &sb_cache.inode_start_block); pos += 4;
+        char2ul(&buf[pos], &sb_cache.inode_count); pos += 4;
+        char2ul(&buf[pos], &sb_cache.data_start_block); pos += 4;
+        char2ul(&buf[pos], &sb_cache.free_blocks); pos += 4;
+        char2ul(&buf[pos], &sb_cache.root_inode); pos += 4;
+
+        if (block_bitmap) free(block_bitmap);
+        block_bitmap = calloc(1, 512); 
+        if (!block_bitmap) return 0;
+
+        if (diskReadSector(d, 1, block_bitmap) != 0) {
             free(block_bitmap);
             block_bitmap = NULL;
-            printf("[MyFS] Erro: Não foi possível ler o mapa de bits\n");
             return 0;
         }
         
-        // Copia o primeiro bloco do mapa de bits
-        memcpy(block_bitmap, bitmap_block, 512);
-        
-        // Inicializa a tabela de arquivos abertos
         memset(open_files_table, 0, sizeof(open_files_table));
-        
+        current_disk = d;
         fs_mounted = 1;
         printf("[MyFS] Sistema montado com sucesso! %u blocos livres\n", sb_cache.free_blocks);
         return 1;
+    } else { // Unmount
+        if (!myFSIsIdle(d)) return 0;
         
-    } else if (x == 0) {  // Operação de desmontagem
-        // Verifica se há arquivos abertos
-        if (!myFSIsIdle(d)) {
-            printf("[MyFS] Erro: Não é possível desmontar com arquivos abertos\n");
-            return 0;
-        }
-        
-        // Libera o mapa de bits da memória
         if (block_bitmap) {
             free(block_bitmap);
             block_bitmap = NULL;
         }
         
-        // Limpa o cache do superbloco
-        memset(&sb_cache, 0, sizeof(superblock_t));
-        
+        current_disk = NULL;
         fs_mounted = 0;
-        printf("[MyFS] Sistema desmontado com sucesso\n");
+        printf("[MyFS] Sistema desmontado.\n");
         return 1;
-        
-    } else {  // Valor de x inválido
-        printf("[MyFS] Erro: Operação de montagem inválida (x=%d)\n", x);
-        return 0;
     }
+
 }
 
 //Funcao para abertura de um arquivo, a partir do caminho especificado
