@@ -412,7 +412,47 @@ int myFSOpen (Disk *d, const char *path) {
 //do próximo byte apos o ultimo lido. Retorna o numero de bytes
 //efetivamente lidos em caso de sucesso ou -1, caso contrario.
 int myFSRead (int fd, char *buf, unsigned int nbytes) {
-	return -1;
+	int idx = fd - 1;
+    if (idx < 0 || idx >= MAX_OPEN_FILES || !open_files_table[idx].is_used) return -1;
+    if (open_files_table[idx].is_directory) return -1;
+    if (current_disk == NULL) return -1;
+
+    Inode *inode = inodeLoad(open_files_table[idx].inode_number, current_disk);
+    if (!inode) return -1;
+
+    unsigned int size = inodeGetFileSize(inode);
+    unsigned int pos = open_files_table[idx].current_position;
+    
+    if (pos >= size) { free(inode); return 0; }
+    if (pos + nbytes > size) nbytes = size - pos;
+
+    unsigned int read_count = 0;
+    unsigned char block_buf[512];
+
+    while (read_count < nbytes) {
+        unsigned int blk_idx = pos / 512;
+        unsigned int offset = pos % 512;
+        unsigned int chunk = 512 - offset;
+        if (chunk > nbytes - read_count) chunk = nbytes - read_count;
+
+        unsigned int addr = inodeGetBlockAddr(inode, blk_idx);
+        if (addr != 0) {
+            if (diskReadSector(current_disk, addr, block_buf) < 0) {
+                free(inode); return -1;
+            }
+            memcpy(buf + read_count, block_buf + offset, chunk);
+        } else {
+            memset(buf + read_count, 0, chunk);
+        }
+        
+        pos += chunk;
+        read_count += chunk;
+    }
+
+    open_files_table[idx].current_position = pos;
+    free(inode);
+    return read_count;
+
 }
 
 //Funcao para a escrita de um arquivo, a partir de um descritor de arquivo
