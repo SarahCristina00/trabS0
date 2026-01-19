@@ -300,7 +300,10 @@ int myFSOpen (Disk *d, const char *path) {
 
 	//carrega inode do diretorio raiz
     Inode *root = inodeLoad(sb_cache.root_inode, d);
-    if (!root) return -1;
+    if (!root) {
+        fprintf(stderr, "[Open] Falha ao carregar inode raiz (SB: %u)\n", sb_cache.root_inode);
+        return -1;
+    }
 
 	//procura entrada de diretorio com o nome solicitado
     unsigned int found_inumber = 0;
@@ -319,17 +322,23 @@ int myFSOpen (Disk *d, const char *path) {
         for (int off = 0; off < 512; off += sizeof(dir_entry_t)) {
             dir_entry_t *entry = (dir_entry_t *)(block_buf + off);
             if (entry->inode_number != 0 && strncmp(entry->filename, name, MAX_FILENAME_LEN) == 0) {
+                fprintf(stderr, "[DEBUG Open] Lendo entrada: '%s' (inode %u)\n", entry->filename, entry->inode_number);
                 //arquivo encontrado
+				if (strncmp(entry->filename, name, MAX_FILENAME_LEN) == 0) {
 				found_inumber = entry->inode_number;
                 break;
             }
+        }
         }
         if (found_inumber) break;
     }
 
     if (found_inumber == 0) {
         found_inumber = inodeFindFreeInode(1, d);
-        if (found_inumber == 0) { free(root); return -1; }
+        if (found_inumber == 0) { 
+            fprintf(stderr, "[Open] Erro: Sem inodes livres\n");
+            free(root); return -1; 
+        }
         // cria novo arquivo
         Inode *new_file = inodeCreate(found_inumber, d);
         if (!new_file) { free(root); return -1; }
@@ -337,10 +346,51 @@ int myFSOpen (Disk *d, const char *path) {
         inodeSave(new_file);
         free(new_file);
 		// adiciona entrada no diretorio raiz
-        if (add_dir_entry(d, root, name, found_inumber) < 0) {
-            free(root);
-            return -1;
+        unsigned int entries_per_block = sb_cache.block_size / sizeof(dir_entry_t);
+        int added = 0;
+        
+        for (unsigned int pos = 0; ; pos++) {
+            unsigned int block_idx = pos / entries_per_block;
+            unsigned int offset = (pos % entries_per_block) * sizeof(dir_entry_t);
+            unsigned int block_addr = inodeGetBlockAddr(root, block_idx);
+
+            // Se precisa alocar novo bloco para o diretório
+            if (block_addr == 0) {
+                int new_block = find_free_block(d);
+                if (new_block == -1) break; // Disco cheio
+                
+                memset(block_buf, 0, 512);
+                diskWriteSector(d, new_block, block_buf);
+                if (inodeAddBlock(root, new_block) < 0) break;
+                block_addr = new_block;
+            } else {
+                diskReadSector(d, block_addr, block_buf);
+            }
+
+            dir_entry_t *entry = (dir_entry_t *)(block_buf + offset);
+            
+            // Encontrou slot livre
+            if (entry->inode_number == 0) {
+                entry->inode_number = (unsigned short)found_inumber;
+                memset(entry->filename, 0, MAX_FILENAME_LEN);
+                strncpy(entry->filename, name, MAX_FILENAME_LEN);
+                
+                if (diskWriteSector(d, block_addr, block_buf) < 0) {
+                    fprintf(stderr, "[Open] Erro critico: falha ao gravar entrada no dir\n");
+                    free(root); return -1;
         }
+
+                unsigned int cur_size = inodeGetFileSize(root);
+                unsigned int end_pos = (pos + 1) * sizeof(dir_entry_t);
+                if (end_pos > cur_size) {
+                    inodeSetFileSize(root, end_pos);
+                }
+                inodeSave(root);
+                added = 1;
+                break;
+            }
+        }
+        if (!added) { free(root); return -1; }
     }
     free(root);
 
