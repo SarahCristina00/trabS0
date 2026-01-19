@@ -742,7 +742,9 @@ int myFSLink (int fd, const char *filename, unsigned int inumber) {
             diskWriteSector(current_disk, block_addr, block_buf);
             
             unsigned int size = inodeGetFileSize(dir_inode);
-            inodeSetFileSize(dir_inode, size + entry_size);
+            unsigned int end_pos = (pos + 1) * sizeof(dir_entry_t);
+            if (end_pos > size) {
+                inodeSetFileSize(dir_inode, end_pos);
             inodeSave(dir_inode);
         }
             ret = 0;
@@ -760,26 +762,26 @@ int myFSLink (int fd, const char *filename, unsigned int inumber) {
 //identificada pelo nome indicado em filename. Retorna 0 caso bem
 //sucedido, ou -1 caso contrario.
 int myFSUnlink (int fd, const char *filename) {
-	
+	int idx = fd - 1;
 	// Verifica se o descritor é válido
-    if (fd < 0 || fd >= MAX_OPEN)
+    if (idx < 0 || idx >= MAX_OPEN_FILES)
         return -1;
 
     // Verifica se o descritor está em uso e se é um diretório
-    if (!open[fd].used || !open[fd].is_directory)
+    if (!open_files_table[idx].is_used || !open_files_table[idx].is_directory)
         return -1;
 
     // Nome inválido
-    if (!filename || strlen(filename) == 0 || strlen(filename) > MAX_FILENAME)
+    if (!filename || strlen(filename) == 0 || strlen(filename) > MAX_FILENAME_LEN)
         return -1;
 
     // Carrega o i-node do diretório
-    Inode *dir_inode = inodeLoad(open[fd].inumber, NULL);
+    Inode *dir_inode = inodeLoad(open_files_table[idx].inode_number, current_disk);
     if (!dir_inode)
         return -1;
 
-    unsigned int entry_size = sizeof(Entry_dir);
-    unsigned int entries_per_block = sb.block_size / entry_size;
+    unsigned int entry_size = sizeof(dir_entry_t);
+    unsigned int entries_per_block = sb_cache.block_size / entry_size;
 
     // Percorre todas as entradas do diretório
     for (unsigned int pos = 0; ; pos++) {
@@ -798,23 +800,22 @@ int myFSUnlink (int fd, const char *filename) {
 
         // Lê o bloco do disco
         unsigned char block[512];
-        if (diskReadSector(dir_inode->d, block_addr, block) < 0) {
+        if (diskReadSector(current_disk, block_addr, block) < 0) {
             free(dir_inode);
             return -1;
         }
 
-        Entry_dir *entry = (Entry_dir *)(block + offset);
+        dir_entry_t *entry = (dir_entry_t *)(block + offset);
 
         // Se a entrada for válida e o nome bater
-        if (entry->inumber != 0 &&
-            strncmp(entry->filename, filename, MAX_FILENAME) == 0) {
-
+        if (entry->inode_number != 0 &&
+            strncmp(entry->filename, filename, MAX_FILENAME_LEN) == 0) {
             // Remove a entrada: zera o i-node e o nome
-            entry->inumber = 0;
-            memset(entry->filename, 0, MAX_FILENAME);
+            entry->inode_number = 0;
+            memset(entry->filename, 0, MAX_FILENAME_LEN);
 
             // Grava o bloco atualizado no disco
-            if (diskWriteSector(dir_inode->d, block_addr, block) < 0) {
+            if (diskWriteSector(current_disk, block_addr, block) < 0) {
                 free(dir_inode);
                 return -1;
             }
@@ -828,23 +829,7 @@ int myFSUnlink (int fd, const char *filename) {
 //Funcao para fechar um diretorio, identificado por um descritor de
 //arquivo existente. Retorna 0 caso bem sucedido, ou -1 caso contrario.	
 int myFSCloseDir (int fd) {
-	
-	 // Verifica se o descritor é válido
-    if (fd < 0 || fd >= MAX_OPEN)
-        return -1;
-
-    // Verifica se o descritor está em uso e se é um diretório
-    if (!open[fd].used || !open[fd].is_directory)
-        return -1;
-
-    // Libera a entrada da tabela de arquivos abertos
-    open[fd].used = 0;
-    open[fd].inumber = 0;
-    open[fd].position_dir = 0;
-    open[fd].is_directory = 0;
-
-    return 0;
-
+	return myFSClose(fd);
 }
 
 //Funcao para instalar seu sistema de arquivos no S.O., registrando-o junto
