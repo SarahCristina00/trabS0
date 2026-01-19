@@ -267,7 +267,7 @@ int myFSxMount (Disk *d, int x) {
             block_bitmap = NULL;
             return 0;
         }
-        
+
         memset(open_files_table, 0, sizeof(open_files_table));
         current_disk = d;
         fs_mounted = 1;
@@ -276,9 +276,9 @@ int myFSxMount (Disk *d, int x) {
     } else { // Unmount
         if (!myFSIsIdle(d)) return 0;
         
-        if (block_bitmap) {
-            free(block_bitmap);
-            block_bitmap = NULL;
+        if (block_bitmap) { 
+            free(block_bitmap); 
+            block_bitmap = NULL; 
         }
         
         current_disk = NULL;
@@ -325,10 +325,10 @@ int myFSOpen (Disk *d, const char *path) {
                 fprintf(stderr, "[DEBUG Open] Lendo entrada: '%s' (inode %u)\n", entry->filename, entry->inode_number);
                 //arquivo encontrado
 				if (strncmp(entry->filename, name, MAX_FILENAME_LEN) == 0) {
-				found_inumber = entry->inode_number;
-                break;
+                    found_inumber = entry->inode_number;
+                    break;
+                }
             }
-        }
         }
         if (found_inumber) break;
     }
@@ -378,7 +378,7 @@ int myFSOpen (Disk *d, const char *path) {
                 if (diskWriteSector(d, block_addr, block_buf) < 0) {
                     fprintf(stderr, "[Open] Erro critico: falha ao gravar entrada no dir\n");
                     free(root); return -1;
-        }
+                }
 
                 unsigned int cur_size = inodeGetFileSize(root);
                 unsigned int end_pos = (pos + 1) * sizeof(dir_entry_t);
@@ -466,9 +466,9 @@ int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
     
     if (idx < 0 || idx >= MAX_OPEN_FILES) {
         printf("[Write] Erro: FD invalido (%d -> idx %d)\n", fd, idx);
-	return -1;
-}
-
+        return -1;
+    }
+    
     if (!open_files_table[idx].is_used) {
         printf("[Write] Erro: Arquivo nao esta aberto (idx %d)\n", idx);
         return -1;
@@ -612,72 +612,72 @@ int myFSReadDir (int fd, char *filename, unsigned int *inumber) {
     // Verifica se o descritor está em uso e se realmente é um diretório
     if (!open_files_table[idx].is_used || !open_files_table[idx].is_directory)
         return -1;
-
+    
     if (current_disk == NULL) return -1;
 
     // Carrega o i-node do diretório a partir do número armazenado na tabela open_files_table
     Inode *dir_inode = inodeLoad(open_files_table[idx].inode_number, current_disk);
     if (!dir_inode)
         return -1;
-
+    
     unsigned int dir_size = inodeGetFileSize(dir_inode);
     
     while (1)
     {
-    // Posição atual do cursor no diretório (qual entrada será lida)
+        // Posição atual do cursor no diretório (qual entrada será lida)
         unsigned int pos = open_files_table[idx].dir_read_position;
 
-    // Calcula qual bloco do diretório contém a entrada atual
+        // Calcula qual bloco do diretório contém a entrada atual
         unsigned int block_index = (pos * sizeof(dir_entry_t)) / sb_cache.block_size;
 
-    // Calcula o deslocamento da entrada dentro do bloco
+        // Calcula o deslocamento da entrada dentro do bloco
         unsigned int offset = (pos * sizeof(dir_entry_t)) % sb_cache.block_size;
 
-    // Obtém o endereço do bloco no disco a partir do i-node
-    unsigned int block_addr = inodeGetBlockAddr(dir_inode, block_index);
+        // Obtém o endereço do bloco no disco a partir do i-node
+        unsigned int block_addr = inodeGetBlockAddr(dir_inode, block_index);
 
-    // Se não houver bloco associado, chegou ao fim do diretório
-    if (block_addr == 0) {
-        free(dir_inode);
-        return 0; // fim do diretório
-    }
-    // Buffer para leitura do bloco do disco
-    unsigned char block[512];
+        // Se não houver bloco associado, chegou ao fim do diretório
+        if (block_addr == 0) {
+            free(dir_inode);
+            return 0; // fim do diretório
+        }
+        // Buffer para leitura do bloco do disco
+        unsigned char block[512];
 
-    // Lê o bloco do disco
+        // Lê o bloco do disco
         if (diskReadSector(current_disk, block_addr, block) < 0) {
-        free(dir_inode);
-        return -1;
-    }
+            free(dir_inode);
+            return -1;
+        }
 
         dir_entry_t entry;
 
-    // Copia os dados da entrada a partir do bloco
+        // Copia os dados da entrada a partir do bloco
         memcpy(&entry, block + offset, sizeof(dir_entry_t));
 
-    // Se o número do i-node for 0, a entrada é vazia → fim do diretório
+       // Se o número do i-node for 0, a entrada é vazia → fim do diretório
        if (entry.inode_number == 0) {
-        free(dir_inode);
-        return 0;
-    }
+            free(dir_inode);
+            return 0;
+        }
 
-    // Copia o nome do arquivo para o buffer de saída
+        // Copia o nome do arquivo para o buffer de saída
         strncpy(filename, entry.filename, MAX_FILENAME_LEN);
-    // Garante que o nome termine com '\0'
+        // Garante que o nome termine com '\0'
         filename[MAX_FILENAME_LEN] = '\0';
 
-    // Retorna o número do i-node associado à entrada
+        // Retorna o número do i-node associado à entrada
         *inumber = entry.inode_number;
 
-    // Avança o cursor do diretório para a próxima entrada
+       // Avança o cursor do diretório para a próxima entrada
         open_files_table[idx].dir_read_position++;
 
         if (entry.inode_number != 0) {
             strncpy(filename, entry.filename, MAX_FILENAME_LEN);
             filename[MAX_FILENAME_LEN] = '\0';
             *inumber = entry.inode_number;
-    free(dir_inode);
-    return 1;
+            free(dir_inode);
+            return 1;
         }
     }
 }
@@ -727,7 +727,7 @@ int myFSLink (int fd, const char *filename, unsigned int inumber) {
         }
 
         dir_entry_t *entry = (dir_entry_t *)(block_buf + offset);
-
+        
         // Verifica duplicata
         if (entry->inode_number != 0 && strncmp(entry->filename, filename, MAX_FILENAME_LEN) == 0) {
             ret = -1; // Já existe
@@ -738,18 +738,18 @@ int myFSLink (int fd, const char *filename, unsigned int inumber) {
             entry->inode_number = (unsigned short)inumber;
             memset(entry->filename, 0, MAX_FILENAME_LEN);
             strncpy(entry->filename, filename, MAX_FILENAME_LEN);
-
+            
             diskWriteSector(current_disk, block_addr, block_buf);
             
             unsigned int size = inodeGetFileSize(dir_inode);
             unsigned int end_pos = (pos + 1) * sizeof(dir_entry_t);
             if (end_pos > size) {
                 inodeSetFileSize(dir_inode, end_pos);
-            inodeSave(dir_inode);
-        }
+                inodeSave(dir_inode);
+            }
             ret = 0;
             break;
-    }
+        }
     }
 
 
