@@ -462,7 +462,86 @@ int myFSRead (int fd, char *buf, unsigned int nbytes) {
 //proximo byte apos o ultimo escrito. Retorna o numero de bytes
 //efetivamente escritos em caso de sucesso ou -1, caso contrario
 int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
+    int idx = fd - 1;
+    
+    if (idx < 0 || idx >= MAX_OPEN_FILES) {
+        printf("[Write] Erro: FD invalido (%d -> idx %d)\n", fd, idx);
 	return -1;
+}
+
+    if (!open_files_table[idx].is_used) {
+        printf("[Write] Erro: Arquivo nao esta aberto (idx %d)\n", idx);
+        return -1;
+    }
+    
+    if (open_files_table[idx].is_directory) {
+        printf("[Write] Erro: Tentativa de escrita em diretorio\n");
+        return -1;
+    }
+    
+    if (current_disk == NULL) {
+        printf("[Write] Erro: current_disk eh NULL\n");
+        return -1;
+    }
+
+    unsigned int inum = open_files_table[idx].inode_number;
+    Inode *inode = inodeLoad(inum, current_disk);
+    if (!inode) {
+        printf("[Write] Erro: inodeLoad falhou para inumber %u\n", inum);
+        return -1;
+    }
+
+    unsigned int pos = open_files_table[idx].current_position;
+    unsigned int written_count = 0;
+    unsigned char block_buf[512];
+
+    while (written_count < nbytes) {
+        unsigned int blk_idx = pos / 512;
+        unsigned int offset = pos % 512;
+        unsigned int chunk = 512 - offset;
+        if (chunk > nbytes - written_count) chunk = nbytes - written_count;
+
+        unsigned int addr = inodeGetBlockAddr(inode, blk_idx);
+        
+        if (addr == 0) {
+            int new_blk = find_free_block(current_disk);
+            if (new_blk == -1) {
+                printf("[Write] Erro: Disco cheio (find_free_block)\n");
+                break; 
+            }
+            
+            memset(block_buf, 0, 512);
+            diskWriteSector(current_disk, new_blk, block_buf);
+            
+            if (inodeAddBlock(inode, new_blk) < 0) {
+                printf("[Write] Erro: inodeAddBlock falhou\n");
+                break; 
+            }
+            addr = new_blk;
+        } else {
+            if (chunk < 512) {
+                diskReadSector(current_disk, addr, block_buf);
+            }
+        }
+
+        memcpy(block_buf + offset, buf + written_count, chunk);
+        if (diskWriteSector(current_disk, addr, block_buf) < 0) {
+            printf("[Write] Erro: diskWriteSector falhou\n");
+            break;
+        }
+
+        pos += chunk;
+        written_count += chunk;
+    }
+
+    if (pos > inodeGetFileSize(inode)) {
+        inodeSetFileSize(inode, pos);
+        inodeSave(inode);
+    }
+
+    open_files_table[idx].current_position = pos;
+    free(inode);
+    return written_count;
 }
 
 //Funcao para fechar um arquivo, a partir de um descritor de arquivo
