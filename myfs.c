@@ -604,31 +604,34 @@ int myFSOpenDir (Disk *d, const char *path) {
 //Retorna 1 se uma entrada foi lida, 0 se fim de diretorio ou -1 caso
 //mal sucedido
 int myFSReadDir (int fd, char *filename, unsigned int *inumber) {
-
+    int idx = fd - 1;
 	   // Verifica se o descritor de diretório é válido
-    if (fd < 0 || fd >= MAX_OPEN)
+    if (idx < 0 || idx >= MAX_OPEN_FILES)
         return -1;
 
     // Verifica se o descritor está em uso e se realmente é um diretório
-    if (!open[fd].used || !open[fd].is_directory)
+    if (!open_files_table[idx].is_used || !open_files_table[idx].is_directory)
         return -1;
 
-    // Carrega o i-node do diretório a partir do número armazenado na tabela open[]
-    Inode *dir_inode = inodeLoad(open[fd].inumber, NULL);
+    if (current_disk == NULL) return -1;
+
+    // Carrega o i-node do diretório a partir do número armazenado na tabela open_files_table
+    Inode *dir_inode = inodeLoad(open_files_table[idx].inode_number, current_disk);
     if (!dir_inode)
         return -1;
 
+    unsigned int dir_size = inodeGetFileSize(dir_inode);
+    
+    while (1)
+    {
     // Posição atual do cursor no diretório (qual entrada será lida)
-    unsigned int pos = open[fd].position_dir;
-
-    // Tamanho de uma entrada de diretório (16 bytes)
-    unsigned int entry_size = sizeof(Entry_dir);
+        unsigned int pos = open_files_table[idx].dir_read_position;
 
     // Calcula qual bloco do diretório contém a entrada atual
-    unsigned int block_index = (pos * entry_size) / sb.block_size;
+        unsigned int block_index = (pos * sizeof(dir_entry_t)) / sb_cache.block_size;
 
     // Calcula o deslocamento da entrada dentro do bloco
-    unsigned int offset = (pos * entry_size) % sb.block_size;
+        unsigned int offset = (pos * sizeof(dir_entry_t)) % sb_cache.block_size;
 
     // Obtém o endereço do bloco no disco a partir do i-node
     unsigned int block_addr = inodeGetBlockAddr(dir_inode, block_index);
@@ -638,46 +641,45 @@ int myFSReadDir (int fd, char *filename, unsigned int *inumber) {
         free(dir_inode);
         return 0; // fim do diretório
     }
-
     // Buffer para leitura do bloco do disco
     unsigned char block[512];
 
     // Lê o bloco do disco
-    if (diskReadSector(dir_inode->d, block_addr, block) < 0) {
+        if (diskReadSector(current_disk, block_addr, block) < 0) {
         free(dir_inode);
         return -1;
     }
 
-    // Estrutura para armazenar a entrada de diretório lida
-    Entry_dir entry;
+        dir_entry_t entry;
 
     // Copia os dados da entrada a partir do bloco
-    memcpy(&entry, block + offset, entry_size);
+        memcpy(&entry, block + offset, sizeof(dir_entry_t));
 
     // Se o número do i-node for 0, a entrada é vazia → fim do diretório
-    if (entry.inumber == 0) {
+       if (entry.inode_number == 0) {
         free(dir_inode);
         return 0;
     }
 
     // Copia o nome do arquivo para o buffer de saída
-    strncpy(filename, entry.filename, MAX_FILENAME);
-
+        strncpy(filename, entry.filename, MAX_FILENAME_LEN);
     // Garante que o nome termine com '\0'
-    filename[MAX_FILENAME] = '\0';
+        filename[MAX_FILENAME_LEN] = '\0';
 
     // Retorna o número do i-node associado à entrada
-    *inumber = entry.inumber;
+        *inumber = entry.inode_number;
 
     // Avança o cursor do diretório para a próxima entrada
-    open[fd].position_dir++;
+        open_files_table[idx].dir_read_position++;
 
-    // Libera o i-node carregado
+        if (entry.inode_number != 0) {
+            strncpy(filename, entry.filename, MAX_FILENAME_LEN);
+            filename[MAX_FILENAME_LEN] = '\0';
+            *inumber = entry.inode_number;
     free(dir_inode);
-
-
     return 1;
-
+        }
+    }
 }
 
 //Funcao para adicionar uma entrada a um diretorio, identificado por um
