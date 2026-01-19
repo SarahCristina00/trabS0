@@ -547,7 +547,10 @@ int myFSWrite (int fd, const char *buf, unsigned int nbytes) {
 //Funcao para fechar um arquivo, a partir de um descritor de arquivo
 //existente. Retorna 0 caso bem sucedido, ou -1 caso contrario
 int myFSClose (int fd) {
-	return -1;
+	int idx = fd - 1;
+    if (idx < 0 || idx >= MAX_OPEN_FILES || !open_files_table[idx].is_used) return -1;
+    open_files_table[idx].is_used = 0;
+    return 0;
 }
 
 //Funcao para abertura de um diretorio, a partir do caminho
@@ -557,7 +560,7 @@ int myFSClose (int fd) {
 int myFSOpenDir (Disk *d, const char *path) {
 
     //  Verifica se o FS está montado
-    if (!mounted || !d || !path)
+    if (!fs_mounted || !d || !path)
         return -1;
 
     //  Por enquanto, só aceita o diretório raiz "/"
@@ -565,27 +568,26 @@ int myFSOpenDir (Disk *d, const char *path) {
         return -1;
 
     //  Encontra posição livre na tabela de arquivos abertos
-    int fd = free_file_find();
+    int fd = find_free_fd();
     if (fd < 0)
         return -1;
 
     //  Carrega o i-node do diretório raiz
-    Inode *root = inodeLoad(sb.root_inode, d);
+    Inode *root = inodeLoad(sb_cache.root_inode, d);
     if (!root)
         return -1;
 
     //  Verifica se realmente é um diretório
-    if (inodeGetFileType(root) != TYPEFILE_DIRECTORY) {
+    if (inodeGetFileType(root) != INODE_TYPE_DIRECTORY) {
         free(root);
         return -1;
     }
 
     // Preenche a tabela de arquivos abertos
-    open[fd].used = 1;
-    open[fd].inumber = sb.root_inode;
-    open[fd].pointer_file = 0;      // cursor começa no início
-    open[fd].is_directory = 1;
-    open[fd].position_dir = 0;      // posição da leitura no diretório
+    open_files_table[fd].is_used = 1;
+    open_files_table[fd].inode_number = sb_cache.root_inode;
+    open_files_table[fd].is_directory = 1;
+    open_files_table[fd].dir_read_position = 0;      // posição da leitura no diretório
 
     free(root);
 
