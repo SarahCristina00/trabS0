@@ -140,7 +140,97 @@ int myFSIsIdle (Disk *d) {
 //blocos disponiveis no disco, se formatado com sucesso. Caso contrario,
 //retorna -1.
 int myFSFormat (Disk *d, unsigned int blockSize) {
-	return -1;
+	if (blockSize != 512) return -1; 
+
+    unsigned long total_sectors = diskGetNumSectors(d);
+    
+    // 1. Configura e Grava Superbloco
+    sb_cache.magic_number = MYFS;
+    sb_cache.block_size = blockSize;
+    sb_cache.total_blocks = total_sectors;
+    sb_cache.inode_start_block = 2; 
+    
+    // Define 10% do disco para inodes
+    unsigned int num_inode_blocks = (total_sectors / 10);
+    if (num_inode_blocks < 1) num_inode_blocks = 1;
+    
+    sb_cache.inode_count = num_inode_blocks * (blockSize / 64); // 64 bytes por inode (assumindo inode.c padrão)
+    sb_cache.data_start_block = sb_cache.inode_start_block + num_inode_blocks;
+    sb_cache.free_blocks = total_sectors - sb_cache.data_start_block;
+    sb_cache.root_inode = ROOT_INODE_NUM;
+
+    unsigned char sb_buf[512] = {0};
+    unsigned int pos = 0;
+    ul2char(sb_cache.magic_number, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.block_size, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.total_blocks, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.inode_start_block, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.inode_count, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.data_start_block, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.free_blocks, &sb_buf[pos]); pos += 4;
+    ul2char(sb_cache.root_inode, &sb_buf[pos]); pos += 4;
+    
+    if (diskWriteSector(d, 0, sb_buf) < 0) return -1;
+
+    // 2. Inicializa o Bitmap Global (Necessário para find_free_block funcionar agora)
+    if (block_bitmap) free(block_bitmap);
+    unsigned int bitmap_size = (total_sectors + 7) / 8; // Tamanho em bytes
+    // Arredonda para tamanho de setor para escrita
+    unsigned int bitmap_sector_size = (bitmap_size + 512 - 1) / 512 * 512;
+    block_bitmap = calloc(1, bitmap_sector_size);
+    if (!block_bitmap) return -1;
+
+    // Marca blocos ocupados (SB + Bitmap + Inodes)
+    for (unsigned int i = 0; i < sb_cache.data_start_block; i++) {
+        block_bitmap[i/8] |= (1 << (i%8));
+    }
+    // Grava Bitmap no disco (Bloco 1)
+    if (diskWriteSector(d, 1, block_bitmap) < 0) {
+        free(block_bitmap); block_bitmap = NULL; return -1;
+    }
+
+    // 3. Zera a área de i-nodes (CRUCIAL: Remove lixo para inodeCreate não falhar ao ler 'next')
+    unsigned char zero_buf[512] = {0};
+    for (unsigned int i = 0; i < num_inode_blocks; i++) {
+        if (diskWriteSector(d, sb_cache.inode_start_block + i, zero_buf) < 0) {
+             free(block_bitmap); block_bitmap = NULL; return -1;
+        }
+    }
+
+    // 4. Inicializa TODOS os i-nodes (CRUCIAL: Escreve os números 1..N no disco)
+    // Sem isso, inodeFindFreeInode lê número 0 e acha que é inválido.
+    for (unsigned int i = 1; i <= sb_cache.inode_count; i++) {
+        Inode *temp = inodeCreate(i, d);
+        if (temp) {
+            free(temp); // Apenas cria/grava e libera
+        }
+    }
+
+    // 5. Configura o Diretório Raiz
+    Inode *root = inodeLoad(ROOT_INODE_NUM, d);
+    if (!root) {
+        free(block_bitmap); block_bitmap = NULL; return -1;
+    }
+    
+    inodeSetFileType(root, INODE_TYPE_DIRECTORY);
+    
+    // Aloca bloco de dados para o diretório
+    int root_block = find_free_block(d);
+    if (root_block != -1) {
+        diskWriteSector(d, root_block, zero_buf); // Limpa conteúdo do diretório
+        inodeAddBlock(root, root_block);
+    }
+    
+    inodeSetFileSize(root, 0);
+    inodeSave(root);
+    free(root);
+
+    // Limpeza: Libera bitmap global pois o mount irá carregá-lo novamente depois
+    free(block_bitmap);
+    block_bitmap = NULL;
+
+    return sb_cache.free_blocks;
+
 }
 
 //Funcao para montagem/desmontagem do sistema de arquivos, se possível.
