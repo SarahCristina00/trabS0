@@ -63,7 +63,7 @@ static superblock_t sb_cache;              // Cópia do superbloco em memória
 static int fs_mounted = 0;                 // 1=montado, 0=não montado
 static unsigned char *block_bitmap = NULL; // Mapa de bits (1 bit por bloco)
 static open_file_t open_files_table[MAX_OPEN_FILES]; // Tabela de arquivos abertos
-
+static Disk *current_disk= NULL;              // Ponteiro para o disco atual
 // ================= Funções auxiliares ===============
 
 // Encontra um bloco livre no mapa de bits
